@@ -1,1 +1,207 @@
+''' IMPORTS
+'''
+import warnings
+warnings.filterwarnings("ignore")
+import pandas as pd
+import xgboost as xgb
+import datetime as dt
+import numpy as np
+from numpy import asarray
+from pandas import read_csv
+from pandas import DataFrame
+from pandas import concat
+from xgboost import XGBRegressor
+from sklearn.metrics import mean_absolute_error 
+from sklearn.metrics import mean_squared_error
+from dateutil.relativedelta import *
+from statsmodels.tsa.arima.model import ARIMA
+
+
+''' LOAD DATA
+Load Data with X 'Date' Column and Y target value column. Y column must be numeric value and to at least 1 decimal point!
+Change file path specific to the location of your time series data. file path for data and loop must match exactly!
+-
+ARIMAdata is used so user only has to input csv file Once!
+'''
+                        #Change Input Data
+data = pd.read_csv('data_for_inequalities.csv')
+                        #Change Input Data
+loopData = pd.read_csv('data_for_inequalities.csv')
+
+# Data Used for ARIMA
+ARIMAdata = data
+
+
+''' USER DEFINED
+ 
+Length_of_split: Use 12 for month cycles or 30 for daily cycles or 24 for hourly cycles
+
+target_col: specify target Y column name - target_col = 'Name of your target column'
+
+number_of_steps: Specify Number of steps to predict 
+
+length_of_train: Specify number of values to train 
+ 
+Use # to comment out what you dont need and remove # for what you need
+'''
+length_of_split = 12
+#   length_of_split = 30
+#   length_of_split = 24
+target_col = 'SG_Y'
+number_of_steps = 36
+length_of_train = 24
+
+#Turns target value Y column into type integer to type float for use in XGB Loop
+loopData[target_col] = loopData[target_col].astype(float)
+
+
+''' PRE PROCESSING 
+Sorts data in sliding window technique shifting values one-step
+to create new columns of X variables for target 'target_col' Y variable.
+'''
+for i in range(1, length_of_split+1):
+    col_name = 'n-' + str(i)
+    data[col_name] = data[target_col].shift(i)
+
+data.set_index('Date', inplace = True)
+
+
+''' DROPS NAN VALUES
+'''
+data = data.dropna()
+
+
+''' TRAIN/TEST SPLIT
+Splits processed data into train/test.
+'''
+X_train = data.head(length_of_train).drop(target_col, axis = 1)
+y_train = data.head(length_of_train)[target_col]
+
+X_test = data.tail(length_of_split).drop(target_col, axis = 1)
+y_test = data.tail(length_of_split)[target_col]
+
+
+''' XGBOOST
+Creates model then fits model on Training data.
+'''
+model_fit = xgb.XGBRegressor(objective='reg:squarederror', n_estimators = 1000)
+model_fit.fit(X_train, y_train)
+model_fit.predict(X_test)
+
+
+''' METRICS
+Gives MAE, MSE & RMSE scores for XGBoost
+'''
+ypred = model_fit.predict(X_test)
+mse = mean_squared_error(y_test, ypred)
+mae = mean_absolute_error(y_test, ypred)
+print("XGBoost MAE: %.2f" % mae)
+print("XGBoost MSE: %.2f" % mse)
+print("XGBoost RMSE: %.2f" % (mse**(1/2.0)))
+
+
+''' FUTURE PREDICTIONS
+Loop used for predicting next 'n' values - 'n' = number_of_steps (as defined by user earlier)
+Change file path specific to your time series data
+'''
+                    #Change Input Data 
+df = loopData
+print("---XGBoost MAE: %.2f" % mae)
+print('---XGBoost Predictions:')
+for i in range(1, number_of_steps):
+    forecast = pd.DataFrame(columns=df.columns)
+    forecast['Date'] = pd.date_range(start = pd.to_datetime(max(df['Date'])) + relativedelta(months = 1), periods = 1, freq='M')
+    forecast['Date'] = pd.to_datetime(forecast['Date'])
+    forecast['Date'] = forecast['Date'].dt.strftime('%Y/%m')
+   
+    #Adds empty row to dataframe
+    data = df.append(forecast)
+
+    #Creates shifted columns n-1, n-2 ... n-12 for previous values
+    for j in range(1, length_of_split + 1):
+        coll_name = 'n-' + str(j)
+        data[coll_name] = data[target_col].shift(j)
+
+    data.set_index('Date', inplace = True)
+
+    #Uses last row of n values as input for predictions
+    X_forecast = data.tail(1).drop(target_col, axis = 1)
+
+    #Removes last row as not for future so shouldn't be used in Training
+    data = data.dropna()
+    X_test_forecast = data.drop(target_col, axis = 1)
+    y_test_forecast = data[target_col]
+
+    #Fits XGBoost model
+    import xgboost as xgb
+    model_fit = xgb.XGBRegressor(objective = 'reg:squarederror', n_estimators = 1000)
+    model_fit.fit(X_test_forecast, y_test_forecast)
+    predictions = model_fit.predict(X_forecast)
+
+    #Fill the next NaN values
+    forecast = forecast.fillna(predictions[0])
+    df = df.append(forecast).reset_index(drop = True)
+
+#Rounds predictions to the nearest whole number    
+df[target_col] = df[target_col].round()
+print(df.tail(number_of_steps))
+
+#Outputs future dates column and prediction column to csv file named: 'xgbPredictions.csv'
+df.tail(number_of_steps).to_csv('xgbPredictions.csv', index=False)
+
+#-------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+''' ARIMA MODEL 
+Prerequisites - Check if data is stationary
+              - If not use differencing prior to loading in your data set 
+'''
+
+'''LOAD DATA -- 
+Data automatically loaded in stored as ARIMAdata
+'''
+ARIMAdata = pd.Series(ARIMAdata[target_col])
+
+
+'''Last n rows are hidden from training 
+'''
+ARIMAdata = ARIMAdata.drop(ARIMAdata.tail(length_of_split).index)
+
+
+'''ARIMA Model
+- ARIMA Order is dependant on data
+'''
+# Fit the model on the historic data
+model = ARIMA(ARIMAdata, order=(1, 0, 1))
+model_fit = model.fit()
+pred = model_fit.predict(-length_of_split)
+
+
+'''Model Metric Score
+'''
+#Mean Absolute Error Metric
+arimaMAE = mean_absolute_error(y_test, pred)
+arimaMSE = mean_squared_error(y_test, pred)
+print("ARIMA MAE: %.2f" % arimaMAE)
+print("ARIMA MSE: %.2f" % arimaMSE)
+print("ARIMA RMSE: %.2f" % (arimaMSE**(1/2.0)))
+
+
+#predict
+pred = (model_fit.predict(len(data), len(data)+ number_of_steps))
+pred = pd.DataFrame(pred).reset_index()
+pred = pred.rename(columns={'predicted_mean':'Values'})
+pred['Values'] = pred['Values'].round()
+
+
+'''Print Predictions to csv called: 'arimaPredictions.csv'
+'''
+pred.to_csv('arimaPredictions.csv', index=False)
+
+--------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+'''Evaluation of both Models by Mean Absolute Error
+'''
+#Closer MAE to 0 shows the model with more accurate predictions and thus should be used for Users data.
+print("XGBoost  MAE:  %.2f" % mae)
+print("ARIMA    MAE:  %.2f" % arimaMAE)
 
