@@ -1,0 +1,49 @@
+#Linear Regression For Time Series Inequalities Template
+
+#Imports
+import numpy as np
+import pandas as pd
+from sklearn import linear_model
+from sklearn.metrics import mean_absolute_error
+
+#Load in Data
+data = pd.read_csv('data_for_inequalities.csv')
+
+#User Defined
+number_of_steps = 36
+length_of_train = 24
+length_of_split = 12
+target_col = 'SG_Y'
+
+#PRE PROCESSING 
+#Sorts data in sliding window technique shifting values one-step
+#to create new columns of X variables for target 'target_col' Y variable.
+
+for i in range(1, length_of_split+1):
+    col_name = 'n-' + str(i)
+    data[col_name] = data[target_col].shift(i)
+
+data.set_index('Date', inplace = True)
+
+#DROPS NAN VALUES
+data = data.dropna()
+
+#Train/Test Split
+X_train = data.head(length_of_train).drop(target_col, axis = 1)
+y_train = data.head(length_of_train)[target_col]
+
+X_test = data.tail(length_of_split).drop(target_col, axis = 1)
+y_test = data.tail(length_of_split)[target_col]
+
+#Creating Linear Reg Model (OLS)
+linReg = linear_model.LinearRegression()
+
+#Train the model
+linReg.fit(X_train, y_train)
+
+#Making Predictions
+y_pred = linReg.predict(X_test)
+print(y_pred)
+
+#Evaluate Model by calculating MAE
+print('Mean absolute error: %.2f' % mean_absolute_error(y_test, y_pred))
